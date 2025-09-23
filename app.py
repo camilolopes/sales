@@ -10,10 +10,7 @@ import pandas as pd
 import streamlit as st
 import unicodedata  # ensure unicodedata is imported for unaccent()
 
-# Silence watch observer errors on Streamlit Cloud (inotify limit)
-st.set_option('server.fileWatcherType', 'none')
-
-APP_VERSION = "v3.2 (produto obrigatório + unicodedata import + watcher off)"
+APP_VERSION = "v3.3 (produto obrigatório + unicodedata import + watcher via config.toml)"
 
 # ------------------------------
 # Helpers
@@ -341,7 +338,7 @@ def build_excel(df, resumo, lojas, vendedores, departamentos, vendas_dia):
 # ------------------------------
 # UI
 # ------------------------------
-st.set_page_config(page_title="Indicadores Drogaria (v3.2)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria (v3.3)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria (" + APP_VERSION + ")")
 st.caption("Ticket médio calculado com base em CUPOM deduplicado por CÓDIGO DE PRODUTO. Evita duplicidades no total do cupom e no somatório por loja/vendedor.")
 
@@ -382,7 +379,7 @@ if uploaded:
     value_col = sel("Coluna de Valor da Venda (R$) (OBRIGATÓRIO)", "value")
     qty_col = sel("Coluna de Quantidade (opcional)", "qty", optional=True)
 
-    proceed = st.button("Gerar Indicadores e Arquivos (v3.2)")
+    proceed = st.button("Gerar Indicadores e Arquivos (v3.3)")
 
     if proceed:
         cols_map = {
@@ -442,9 +439,9 @@ if uploaded:
                 st.markdown("### ⬇️ Downloads")
                 excel_bytes = build_excel(df.copy(), resumo, lojas, vendedores, departamentos, vendas_dia)
                 st.download_button(
-                    label="Baixar Excel com Dashboard (v3.2)",
+                    label="Baixar Excel com Dashboard (v3.3)",
                     data=excel_bytes,
-                    file_name=f"Indicadores_Drogaria_v3_2_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    file_name=f"Indicadores_Drogaria_v3_3_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
