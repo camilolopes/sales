@@ -2,6 +2,7 @@
 # app.py
 # -*- coding: utf-8 -*-
 import io
+import re
 import csv
 from datetime import datetime
 
@@ -10,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import unicodedata
 
-APP_VERSION = "v4.2 (produção | soma linha a linha; base por cupom consolidado)"
+APP_VERSION = "v4.3 (produção | soma linha a linha + parser monetário robusto)"
 
 # ==============================
 # Utilitários
@@ -36,22 +37,68 @@ def normalize_columns(cols):
         out.append(c)
     return out
 
-def to_float_series(s: pd.Series):
-    return pd.to_numeric(
-        s.astype(str)
-         .str.replace(r"[^0-9,.\-]", "", regex=True)  # mantém dígitos, ., , e -
-         .str.replace(".", "", regex=False)           # remove separador de milhar
-         .str.replace(",", ".", regex=False),         # vírgula -> ponto
-        errors="coerce"
-    )
+def _parse_money_cell(cell: str):
+    """Parse valor monetário aceitando pt-BR e en-US.
+       - Se há vírgula e ponto: o separador decimal é o ÚLTIMO entre vírgula/ponto.
+       - Se há só vírgula: é decimal se a cauda tem 1-2 dígitos; senão é milhar.
+       - Se há só ponto: é decimal se a cauda tem 1-2 dígitos; senão é milhar.
+    """
+    if cell is None:
+        return np.nan
+    s = str(cell).strip()
+    if s == "" or s.lower() in {"nan", "none"}:
+        return np.nan
+    s = re.sub(r"[^\d,.\-]", "", s)  # mantém apenas dígitos, ',' '.' e sinal
+
+    last_comma = s.rfind(",")
+    last_dot = s.rfind(".")
+    has_comma = last_comma != -1
+    has_dot = last_dot != -1
+
+    decimal_sep = None
+    thousands_sep = None
+
+    if has_comma and has_dot:
+        decimal_sep = "," if last_comma > last_dot else "."
+        thousands_sep = "." if decimal_sep == "," else ","
+    elif has_comma:
+        decimals = len(s) - last_comma - 1
+        if 1 <= decimals <= 2:
+            decimal_sep = ","
+        else:
+            thousands_sep = ","
+    elif has_dot:
+        decimals = len(s) - last_dot - 1
+        if 1 <= decimals <= 2:
+            decimal_sep = "."
+        else:
+            thousands_sep = "."
+
+    try:
+        if thousands_sep:
+            s = s.replace(thousands_sep, "")
+        if decimal_sep and decimal_sep != ".":
+            s = s.replace(decimal_sep, ".")
+        if not decimal_sep:
+            s = s.replace(",", "").replace(".", "")
+        return float(s)
+    except Exception:
+        try:
+            s2 = re.sub(r"[^\d\-]", "", s)
+            return float(s2)
+        except Exception:
+            return np.nan
+
+def to_float_series_robust(series: pd.Series) -> pd.Series:
+    return series.map(_parse_money_cell).astype(float)
 
 # ==============================
-# Cálculos (REGRAS v4.2 – produção)
+# Cálculos (REGRAS v4.3)
 # ==============================
-def compute_indicators_v42(df: pd.DataFrame, cols: dict):
+def compute_indicators_v43(df: pd.DataFrame, cols: dict):
     """
-    Linhas já representam cupons consolidados.
-    1) Faturamento da REDE = soma DIRETA (linha a linha) de 'valor total venda'.
+    Linhas representam cupons consolidados.
+    1) Faturamento da REDE = soma DIRETA (linha a linha) de 'valor total venda' (parser robusto).
     2) Total de CUPONS (rede) = soma DIRETA (linha a linha) de 'quantidade vendida'.
     3) Faturamento por LOJA = soma (linha a linha) de 'valor total venda' agrupando por 'codigo da loja'.
     4) Cupons por LOJA = soma (linha a linha) de 'quantidade vendida' agrupando por 'codigo da loja'.
@@ -62,8 +109,8 @@ def compute_indicators_v42(df: pd.DataFrame, cols: dict):
     store_col = cols["store_code"]
     seller_col = cols.get("seller_code")
 
-    # normalizar tipos
-    df[vcol] = to_float_series(df[vcol]).fillna(0.0)
+    # Normalização robusta
+    df[vcol] = to_float_series_robust(df[vcol]).fillna(0.0)
     df[qcol] = pd.to_numeric(df[qcol], errors="coerce").fillna(0).astype(float)
 
     # 1) Faturamento da rede (linha a linha)
@@ -81,7 +128,7 @@ def compute_indicators_v42(df: pd.DataFrame, cols: dict):
     cupons_loja.columns = ["codigo_loja", "cupons"]
 
     lojas = fat_loja.merge(cupons_loja, on="codigo_loja", how="outer").fillna(0)
-    lojas["ticket_medio_loja"] = np.where(lojas["cupons"]>0, lojas["faturamento"]/lojas["cupons"], np.nan)
+    lojas["ticket_medio_loja"] = np.where(lojas["cupons"] > 0, lojas["faturamento"] / lojas["cupons"], np.nan)
 
     # 5) Faturamento por vendedor
     if seller_col and seller_col in df.columns:
@@ -110,7 +157,7 @@ def compute_indicators_v42(df: pd.DataFrame, cols: dict):
 # ==============================
 # Excel com dashboard
 # ==============================
-def build_excel_v42(df, resumo, lojas, vendedores):
+def build_excel_v43(df, resumo, lojas, vendedores):
     with pd.ExcelWriter(io.BytesIO(), engine="xlsxwriter") as writer:
         # Abas
         df.to_excel(writer, sheet_name="Base", index=False)
@@ -162,9 +209,9 @@ def build_excel_v42(df, resumo, lojas, vendedores):
 # ==============================
 # UI
 # ==============================
-st.set_page_config(page_title="Indicadores Drogaria – v4.2 (produção)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria – v4.3 (produção)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria")
-st.caption("Versão " + APP_VERSION + " – Faturamento da rede e total de cupons somados linha a linha.")
+st.caption("Versão " + APP_VERSION + " – Soma linha a linha + parser monetário robusto (pt-BR/en-US).")
 
 uploaded = st.file_uploader("Envie seu arquivo (.csv, .xlsx)", type=["csv", "xlsx", "xls"], accept_multiple_files=False)
 
@@ -196,7 +243,7 @@ if uploaded:
     value_col = sel("Coluna de **Valor Total Venda (R$)**", "value_col")
     qty_col = sel("Coluna de **Quantidade Vendida**", "qty_col")
 
-    proceed = st.button("Gerar Indicadores (v4.2)")
+    proceed = st.button("Gerar Indicadores (v4.3)")
 
     if proceed:
         # validação
@@ -211,12 +258,12 @@ if uploaded:
             st.error("Mapeie as colunas obrigatórias: **Código da Loja**, **Valor Total Venda** e **Quantidade Vendida**.")
         else:
             try:
-                resumo, lojas, vendedores, fat_rede, cupons_total = compute_indicators_v42(df.copy(), mapped)
+                resumo, lojas, vendedores, fat_rede, cupons_total = compute_indicators_v43(df.copy(), mapped)
             except Exception as e:
                 st.error(f"Erro ao calcular indicadores: {e}")
             else:
                 # Resumo
-                st.subheader("📌 Resumo do Período (Regras v4.2)")
+                st.subheader("📌 Resumo do Período (Regras v4.3)")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Faturamento da Rede (linha a linha)", f"R$ {fat_rede:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                 col2.metric("Total de Cupons (linha a linha)", f"{int(cupons_total):,}".replace(",", "."))
@@ -235,10 +282,10 @@ if uploaded:
                 # Download Excel
                 st.divider()
                 st.markdown("### ⬇️ Download do Excel")
-                excel_bytes = build_excel_v42(df.copy(), resumo, lojas, vendedores)
+                excel_bytes = build_excel_v43(df.copy(), resumo, lojas, vendedores)
                 st.download_button(
-                    label="Baixar Excel (v4.2)",
+                    label="Baixar Excel (v4.3)",
                     data=excel_bytes,
-                    file_name=f"Indicadores_Drogaria_v4_2_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    file_name=f"Indicadores_Drogaria_v4_3_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
