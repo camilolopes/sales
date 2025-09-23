@@ -11,10 +11,10 @@ import pandas as pd
 import streamlit as st
 import unicodedata
 
-import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 
-APP_VERSION = "v4.6 (produção | BRL travado, % depto, vendas diárias c/ gráfico, mapeamento auto)"
+APP_VERSION = "v4.6.1 (produção | sem Plotly, gráficos Matplotlib, BRL travado)"
 
 # ==============================
 # Utilitários
@@ -41,14 +41,8 @@ def normalize_columns(cols):
     return out
 
 def guess_column(normalized_cols, keywords):
-    # retorna a primeira coluna cujo nome contenha TODOS os termos (AND) em qualquer ordem
     for col in normalized_cols:
-        ok = True
-        for k in keywords:
-            if k not in col:
-                ok = False
-                break
-        if ok:
+        if all(k in col for k in keywords):
             return col
     return None
 
@@ -91,10 +85,19 @@ def to_float_series_robust(series: pd.Series) -> pd.Series:
 def parse_date_series(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce", dayfirst=True)
 
+def fmt_brl(value: float) -> str:
+    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def brl_formatter():
+    return FuncFormatter(lambda x, pos: fmt_brl(x))
+
+def pct_ptbr(x: float) -> str:
+    return f"{x:,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
+
 # ==============================
-# Cálculos (v4.6)
+# Cálculos (v4.6.1)
 # ==============================
-def compute_indicators_v46(df: pd.DataFrame, cols: dict):
+def compute_indicators(df: pd.DataFrame, cols: dict):
     vcol = cols["value"]
     qcol = cols["qty"]
     store_col = cols["store_code"]
@@ -104,21 +107,17 @@ def compute_indicators_v46(df: pd.DataFrame, cols: dict):
     dept_name = cols.get("dept_name")
     date_col = cols.get("date_col")
 
-    # Normalização robusta
     df[vcol] = to_float_series_robust(df[vcol]).fillna(0.0)
     df[qcol] = pd.to_numeric(df[qcol], errors="coerce").fillna(0).astype(float)
 
-    # Datas (opcional)
     if date_col and date_col in df.columns:
         df["_data_venda"] = parse_date_series(df[date_col])
     else:
         df["_data_venda"] = pd.NaT
 
-    # Faturamento e cupons (linha a linha)
     faturamento_rede = float(df[vcol].sum())
     total_cupons = float(df[qcol].sum())
 
-    # Lojas
     fat_loja = df.groupby(store_col, dropna=False)[vcol].sum().reset_index()
     fat_loja.columns = ["codigo_loja", "faturamento"]
     cupons_loja = df.groupby(store_col, dropna=False)[qcol].sum().reset_index()
@@ -126,7 +125,6 @@ def compute_indicators_v46(df: pd.DataFrame, cols: dict):
     lojas = fat_loja.merge(cupons_loja, on="codigo_loja", how="outer").fillna(0)
     lojas["ticket_medio_loja"] = np.where(lojas["cupons"]>0, lojas["faturamento"]/lojas["cupons"], np.nan)
 
-    # Vendedores (inclui nome)
     if seller_code and seller_code in df.columns:
         if seller_name and seller_name in df.columns:
             vendedores = df.groupby([seller_code, seller_name], dropna=False)[vcol].sum().reset_index()
@@ -139,7 +137,6 @@ def compute_indicators_v46(df: pd.DataFrame, cols: dict):
     else:
         vendedores = pd.DataFrame(columns=["codigo_vendedor", "nome_vendedor", "faturamento"])
 
-    # Departamentos (% sobre a rede) — usar fração (0-1) para formato Excel de %
     if dept_code and dept_code in df.columns:
         dept = df.groupby(dept_code, dropna=False)[vcol].sum().reset_index()
         dept.columns = ["codigo_departamento", "faturamento"]
@@ -149,23 +146,20 @@ def compute_indicators_v46(df: pd.DataFrame, cols: dict):
             dept = dept.merge(names, on="codigo_departamento", how="left")
         else:
             dept["nome_departamento"] = ""
-        # fração de participação (0-1)
         denom = faturamento_rede if faturamento_rede != 0 else np.nan
         dept["participacao_frac"] = np.where(denom>0, dept["faturamento"] / denom, np.nan)
-        # versão de exibição "60,00%" (string) para o app
         dept["participacao_%"] = dept["participacao_frac"] * 100.0
-        dept = dept[["codigo_departamento", "nome_departamento", "faturamento", "participacao_frac", "participacao_%"]]\
+        dept = dept[["codigo_departamento","nome_departamento","faturamento","participacao_frac","participacao_%"]]\
                  .sort_values("participacao_%", ascending=False)
     else:
-        dept = pd.DataFrame(columns=["codigo_departamento", "nome_departamento", "faturamento", "participacao_frac", "participacao_%"])
+        dept = pd.DataFrame(columns=["codigo_departamento","nome_departamento","faturamento","participacao_frac","participacao_%"])
 
-    # Vendas diárias
     if pd.api.types.is_datetime64_any_dtype(df["_data_venda"]):
         vendas_diarias = df.groupby(df["_data_venda"].dt.date, dropna=False)[vcol].sum().reset_index()
         vendas_diarias.columns = ["data", "faturamento_dia"]
         vendas_diarias = vendas_diarias.sort_values("data")
     else:
-        vendas_diarias = pd.DataFrame(columns=["data", "faturamento_dia"])
+        vendas_diarias = pd.DataFrame(columns=["data","faturamento_dia"])
 
     resumo = pd.DataFrame({
         "Indicador": [
@@ -181,25 +175,24 @@ def compute_indicators_v46(df: pd.DataFrame, cols: dict):
             int(vendedores["codigo_vendedor"].nunique()) if not vendedores.empty else 0
         ]
     })
-
     return resumo, lojas, vendedores, faturamento_rede, total_cupons, dept, vendas_diarias
 
 # ==============================
 # Excel com dashboard
 # ==============================
-def build_excel_v46(df, resumo, lojas, vendedores, dept, vendas_diarias):
+def build_excel(df, resumo, lojas, vendedores, dept, vendas_diarias):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Base", index=False)
         resumo.to_excel(writer, sheet_name="Resumo", index=False)
         lojas.sort_values("faturamento", ascending=False).to_excel(writer, sheet_name="Lojas", index=False)
         vendedores.sort_values("faturamento", ascending=False).to_excel(writer, sheet_name="Vendedores", index=False)
-        # Para Excel: usar a FRAÇÃO (0-1) para coluna de participação, que formatamos como %
+
         dept_xlsx = dept.copy()
         if "participacao_frac" in dept_xlsx.columns:
-            cols_order = ["codigo_departamento","nome_departamento","faturamento","participacao_frac"]
-            dept_xlsx = dept_xlsx[cols_order]
+            dept_xlsx = dept_xlsx[["codigo_departamento","nome_departamento","faturamento","participacao_frac"]]
         dept_xlsx.to_excel(writer, sheet_name="Departamentos", index=False)
+
         vendas_diarias.to_excel(writer, sheet_name="Vendas Diarias", index=False)
 
         wb = writer.book
@@ -212,32 +205,27 @@ def build_excel_v46(df, resumo, lojas, vendedores, dept, vendas_diarias):
         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
         fmt_int = wb.add_format({'num_format': '0'})
         fmt_pct = wb.add_format({'num_format': '0.00%'})
-        # Resumo
         ws_resumo.set_column("A:A", 45)
         ws_resumo.set_column("B:B", 22, fmt_money)
         for r in range(0, len(resumo)):
             label = str(resumo.iloc[r, 0]).lower()
-            if ("cupons" in label) or ("lojas" in label) or ("vendedores" in label):
+            if any(k in label for k in ["cupons", "lojas", "vendedores"]):
                 ws_resumo.write_number(r + 1, 1, float(resumo.iloc[r, 1]), fmt_int)
 
-        # Lojas
         ws_lojas.set_column("A:A", 18)
         ws_lojas.set_column("B:B", 18, fmt_money)
         ws_lojas.set_column("C:C", 12, fmt_int)
         ws_lojas.set_column("D:D", 20, fmt_money)
 
-        # Vendedores
-        ws_vend.set_column("A:A", 22)  # código
-        ws_vend.set_column("B:B", 30)  # nome
+        ws_vend.set_column("A:A", 22)
+        ws_vend.set_column("B:B", 30)
         ws_vend.set_column("C:C", 18, fmt_money)
 
-        # Departamentos
         ws_dept.set_column("A:A", 22)
         ws_dept.set_column("B:B", 28)
         ws_dept.set_column("C:C", 18, fmt_money)
-        ws_dept.set_column("D:D", 16, fmt_pct)  # participacao_frac formatada como 0,00% no Excel
+        ws_dept.set_column("D:D", 16, fmt_pct)  # fração formatada como 0,00%
 
-        # Vendas Diarias
         ws_dias.set_column("A:A", 14)
         ws_dias.set_column("B:B", 18, fmt_money)
 
@@ -255,20 +243,20 @@ def build_excel_v46(df, resumo, lojas, vendedores, dept, vendas_diarias):
         chart_col.set_y_axis({'name': 'R$'})
         ws_resumo.insert_chart('D2', chart_col, {'x_scale': 1.15, 'y_scale': 1.2})
 
-        # Gráfico Pizza Departamentos (usa participacao_frac)
+        # Gráfico Pizza Departamentos
         if len(dept_xlsx) > 0:
             chart_pie = wb.add_chart({'type': 'pie'})
             last_row = len(dept_xlsx) + 1
             chart_pie.add_series({
                 'name': 'Participação por Departamento',
                 'categories': f"='Departamentos'!$B$2:$B${last_row}",
-                'values':     f"='Departamentos'!$D$2:$D${last_row}",  # fração 0-1
+                'values':     f"='Departamentos'!$D$2:$D${last_row}",
                 'data_labels': {'percentage': True}
             })
             chart_pie.set_title({'name': 'Participação no Faturamento por Departamento'})
             ws_dept.insert_chart('F2', chart_pie, {'x_scale': 1.2, 'y_scale': 1.2})
 
-        # Gráfico linha Vendas Diárias na aba correspondente
+        # Gráfico Linha Vendas Diárias
         if len(vendas_diarias) > 0:
             chart_line = wb.add_chart({'type': 'line'})
             last_row = len(vendas_diarias) + 1
@@ -288,9 +276,9 @@ def build_excel_v46(df, resumo, lojas, vendedores, dept, vendas_diarias):
 # ==============================
 # UI
 # ==============================
-st.set_page_config(page_title="Indicadores Drogaria – v4.6 (produção)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria – v4.6.1 (produção)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria")
-st.caption("Versão " + APP_VERSION + " – BRL travado, % departamento formatado, vendas diárias com gráfico, mapeamento automático.")
+st.caption("Versão " + APP_VERSION + " – BRL travado, % depto formatado, vendas diárias com gráfico, mapeamento automático, sem Plotly.")
 
 uploaded = st.file_uploader("Envie seu arquivo (.csv, .xlsx)", type=["csv", "xlsx", "xls"], accept_multiple_files=False)
 
@@ -308,7 +296,6 @@ if uploaded:
     normalized = normalize_columns(display_cols)
     norm_to_display = {n: d for n, d in zip(normalized, display_cols)}
 
-    # ===== Auto-detect mapping (prefill) =====
     guesses = {
         "store_code": guess_column(normalized, ["codigo", "loja"]) or guess_column(normalized, ["cod", "loja"]),
         "seller_code": guess_column(normalized, ["codigo", "vendedor"]) or guess_column(normalized, ["cod", "vendedor"]),
@@ -337,9 +324,7 @@ if uploaded:
     dept_name_norm = sel("**Nome do Departamento** (opcional)", "dept_name", guesses["dept_name"])
     date_col_norm = sel("**Data da Venda** (opcional)", "date_col", guesses["date_col"])
 
-    proceed = st.button("Gerar Indicadores (v4.6)")
-
-    if proceed:
+    if st.button("Gerar Indicadores (v4.6.1)"):
         mapped = {
             "store_code": norm_to_display.get(store_code_norm) if store_code_norm != "(vazio)" else None,
             "seller_code": norm_to_display.get(seller_code_norm) if seller_code_norm != "(vazio)" else None,
@@ -354,78 +339,64 @@ if uploaded:
         if missing:
             st.error("Mapeie as colunas obrigatórias: **Código da Loja**, **Valor Total Venda** e **Quantidade Vendida**.")
         else:
-            try:
-                (resumo, lojas, vendedores, fat_rede, cupons_total,
-                 dept, vendas_diarias) = compute_indicators_v46(df.copy(), mapped)
-            except Exception as e:
-                st.error(f"Erro ao calcular indicadores: {e}")
-            else:
-                # ===== KPIs =====
-                st.subheader("📌 Resumo do Período (v4.6)")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Faturamento da Rede", f"R$ {fat_rede:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                col2.metric("Total de Cupons", f"{int(cupons_total):,}".replace(",", "."))
-                col3.metric("Lojas Ativas", f"{int(lojas['codigo_loja'].nunique())}")
-                col4.metric("Vendedores com Vendas", f"{int(vendedores['codigo_vendedor'].nunique()) if not vendedores.empty else 0}")
+            (resumo, lojas, vendedores, fat_rede, cupons_total,
+             dept, vendas_diarias) = compute_indicators(df.copy(), mapped)
 
-                # ===== Tabelas =====
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("#### 🏬 Faturamento por Loja")
-                    st.dataframe(lojas.sort_values("faturamento", ascending=False), use_container_width=True)
-                with c2:
-                    st.markdown("#### 👤 Faturamento por Vendedor (com nome)")
-                    st.dataframe(vendedores.sort_values("faturamento", ascending=False), use_container_width=True)
+            st.subheader("📌 Resumo do Período (v4.6.1)")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Faturamento da Rede", fmt_brl(fat_rede))
+            col2.metric("Total de Cupons", f"{int(cupons_total):,}".replace(",", "."))
+            col3.metric("Lojas Ativas", f"{int(lojas['codigo_loja'].nunique())}")
+            col4.metric("Vendedores com Vendas", f"{int(vendedores['codigo_vendedor'].nunique()) if not vendedores.empty else 0}")
 
-                # Departamentos preview (participação formatada "60,00%")
-                if len(dept) > 0:
-                    dept_preview = dept.copy()
-                    dept_preview["participacao_%"] = dept_preview["participacao_%"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " %" if pd.notna(x) else "")
-                    st.markdown("#### 🧪 Participação por Departamento (%)")
-                    st.dataframe(dept_preview[["codigo_departamento","nome_departamento","faturamento","participacao_%"]], use_container_width=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 🏬 Faturamento por Loja")
+                st.dataframe(lojas.sort_values("faturamento", ascending=False), use_container_width=True)
+            with c2:
+                st.markdown("#### 👤 Faturamento por Vendedor (com nome)")
+                st.dataframe(vendedores.sort_values("faturamento", ascending=False), use_container_width=True)
 
-                # Vendas diárias preview
-                if len(vendas_diarias) > 0:
-                    st.markdown("#### 📅 Vendas Diárias da Rede")
-                    st.dataframe(vendas_diarias, use_container_width=True)
+            if len(dept) > 0:
+                dept_preview = dept.copy()
+                dept_preview["participacao_%"] = dept_preview["participacao_%"].map(lambda x: pct_ptbr(x) if pd.notna(x) else "")
+                st.markdown("#### 🧪 Participação por Departamento (%)")
+                st.dataframe(dept_preview[["codigo_departamento","nome_departamento","faturamento","participacao_%"]], use_container_width=True)
 
-                # ===== In-app Charts (BRL travado) =====
-                st.divider()
-                st.markdown("### 📊 Visualizações no App")
-
-                # Pizza Departamentos (usa %)
-                if len(dept) > 0 and dept["participacao_%"].notna().any():
-                    label_col = "nome_departamento"
-                    if dept[label_col].fillna("").str.strip().eq("").all():
-                        label_col = "codigo_departamento"
-                    pie = px.pie(
-                        dept,
-                        names=label_col,
-                        values="participacao_%",
-                        title="Participação por Departamento (%)",
-                        hole=0.35
-                    )
-                    pie.update_traces(textposition='inside', texttemplate='%{label}<br>%{value:.2f}%')
-                    st.plotly_chart(pie, use_container_width=True)
-                else:
-                    st.info("Mapeie Código/Nome de Departamento para ver o gráfico de pizza.")
-
-                # Linha Vendas Diárias (travando BRL)
-                if len(vendas_diarias) > 0:
-                    line = px.line(vendas_diarias, x="data", y="faturamento_dia", title="Vendas Diárias da Rede")
-                    line.update_yaxes(tickprefix="R$ ", tickformat=",.2f")
-                    line.update_traces(hovertemplate="Data=%{x}<br>Faturamento=R$ %{y:,.2f}<extra></extra>")
-                    st.plotly_chart(line, use_container_width=True)
-                else:
-                    st.info("Mapeie a coluna de Data da Venda para ver o gráfico de vendas diárias.")
-
-                # ===== Download Excel =====
-                st.divider()
-                st.markdown("### ⬇️ Download do Excel (v4.6)")
-                excel_bytes = build_excel_v46(df.copy(), resumo, lojas, vendedores, dept, vendas_diarias)
-                st.download_button(
-                    label="Baixar Excel (v4.6)",
-                    data=excel_bytes,
-                    file_name=f"Indicadores_Drogaria_v4_6_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                # Pie com Matplotlib
+                labels = dept_preview["nome_departamento"].replace("", np.nan).fillna(dept_preview["codigo_departamento"]).tolist()
+                sizes = dept["participacao_%"].tolist()
+                fig, ax = plt.subplots()
+                wedges, texts, autotexts = ax.pie(
+                    sizes,
+                    labels=labels,
+                    autopct=lambda p: pct_ptbr(p),
+                    startangle=140,
+                    pctdistance=0.7
                 )
+                ax.set_title("Participação por Departamento (%)")
+                st.pyplot(fig, use_container_width=True)
+
+            if len(vendas_diarias) > 0:
+                st.markdown("#### 📅 Vendas Diárias da Rede")
+                st.dataframe(vendas_diarias, use_container_width=True)
+
+                # Linha com Matplotlib + BRL
+                fig2, ax2 = plt.subplots()
+                ax2.plot(vendas_diarias["data"], vendas_diarias["faturamento_dia"])
+                ax2.set_title("Vendas Diárias da Rede")
+                ax2.set_xlabel("Data")
+                ax2.set_ylabel("R$")
+                ax2.yaxis.set_major_formatter(brl_formatter())
+                fig2.autofmt_xdate()
+                st.pyplot(fig2, use_container_width=True)
+
+            st.divider()
+            st.markdown("### ⬇️ Download do Excel (v4.6.1)")
+            excel_bytes = build_excel(df.copy(), resumo, lojas, vendedores, dept, vendas_diarias)
+            st.download_button(
+                label="Baixar Excel (v4.6.1)",
+                data=excel_bytes,
+                file_name=f"Indicadores_Drogaria_v4_6_1_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )

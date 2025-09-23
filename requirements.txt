@@ -3,4 +3,4 @@ pandas
 numpy
 openpyxl
 xlsxwriter
-plotly
+matplotlib
