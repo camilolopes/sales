@@ -1,0 +1,3 @@
+# app.py
+# Streamlit app v4.8 (produção) ...
+# (conteúdo resumido aqui para zip - já entregue ao usuário antes)
