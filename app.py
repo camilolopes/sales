@@ -1,10 +1,7 @@
 
 # app.py
 # -*- coding: utf-8 -*-
-# v4.8.4 – correção do gráfico de participação por departamento
-# - Corrige erro: ValueError ao converter '8,56 %' para float (log aponta astype em participacao_%).
-# - Agora o gráfico usa `participacao_frac` (numérico). A coluna `participacao_%` fica só para exibição.
-# - Mantém Matplotlib 'Agg', multi-upload, médias, metas, top-5, heatmap etc.
+# v4.9.0 – melhorias solicitadas (ordenacoes, formatos, resumo c/ média mensal, gráfico abreviado)
 
 import io
 import re
@@ -21,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
-APP_VERSION = "v4.8.4 (produção | fix pizza dept %)"
+APP_VERSION = "v4.9.0 (produção | ordenações + formatos + média mensal + gráfico abreviado)"
 
 # ==============================
 # Utilitários
@@ -101,8 +98,19 @@ def brl_formatter():
 def pct_ptbr(x: float) -> str:
     return f"{x:,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def df_show(data):
-    return st.dataframe(data, width='stretch')
+def df_show_money(df, cols):
+    d = df.copy()
+    for c in cols:
+        if c in d.columns:
+            d[c] = d[c].map(lambda x: fmt_brl(x) if pd.notna(x) else "")
+    return st.dataframe(d, width='stretch')
+
+def df_show_int(df, cols):
+    d = df.copy()
+    for c in cols:
+        if c in d.columns:
+            d[c] = d[c].map(lambda x: int(round(x)) if pd.notna(x) else "")
+    return st.dataframe(d, width='stretch')
 
 # ==============================
 # Cálculos
@@ -134,11 +142,14 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
         df["_iso_year"] = isocal.year
         df["_iso_week"] = isocal.week
         df["_weekday"] = df["_data_venda"].dt.weekday
+        months_series = df["_data_venda"].dt.to_period("M")
+        qtd_meses = int(months_series.nunique())
     else:
         df["_date"] = pd.NaT
         df["_iso_year"] = np.nan
         df["_iso_week"] = np.nan
         df["_weekday"] = np.nan
+        qtd_meses = 0
 
     # KPIs rede (linha a linha)
     faturamento_rede = float(df[vcol].sum())
@@ -195,7 +206,7 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
     else:
         vendas_diarias = pd.DataFrame(columns=["data","faturamento_dia"])
 
-    # Média diária por vendedor
+    # Média diária por vendedor (ordenar desc depois)
     if seller_code and seller_code in df.columns and pd.api.types.is_datetime64_any_dtype(df["_data_venda"]):
         vend_dia = df.groupby([seller_code, df["_data_venda"].dt.date], dropna=False)[vcol].sum().reset_index()
         vend_dia.columns = ["codigo_vendedor", "data", "faturamento_dia"]
@@ -206,15 +217,17 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
             names.columns = ["codigo_vendedor", "nome_vendedor"]
             media_diaria_vendedor = media_diaria_vendedor.merge(names, on="codigo_vendedor", how="left")
             media_diaria_vendedor = media_diaria_vendedor[["codigo_vendedor","nome_vendedor","faturamento_medio_diario"]]
+        media_diaria_vendedor = media_diaria_vendedor.sort_values("faturamento_medio_diario", ascending=False)
     else:
         media_diaria_vendedor = pd.DataFrame(columns=["codigo_vendedor","nome_vendedor","faturamento_medio_diario"])
 
-    # Média semanal por vendedor por loja (valor e quantidade)
+    # Média semanal por vendedor por loja (valor e quantidade) – qtd como int
     if seller_code and seller_code in df.columns and store_col in df.columns and pd.api.types.is_datetime64_any_dtype(df["_data_venda"]):
         isocal = df["_data_venda"].dt.isocalendar()
         vend_sem = df.groupby([seller_code, store_col, isocal.year, isocal.week], dropna=False)[[vcol, qcol]].sum().reset_index()
         vend_sem.columns = ["codigo_vendedor","codigo_loja","ano_iso","semana_iso","faturamento_semana","qtd_semana"]
         media_semanal_vendedor_loja = vend_sem.groupby(["codigo_vendedor","codigo_loja"], dropna=False)[["faturamento_semana","qtd_semana"]].mean().reset_index()
+        media_semanal_vendedor_loja["qtd_semana"] = media_semanal_vendedor_loja["qtd_semana"].round(0)  # inteiro
         if seller_name and seller_name in df.columns:
             names = df[[seller_code, seller_name]].dropna().drop_duplicates(subset=[seller_code])
             names.columns = ["codigo_vendedor","nome_vendedor"]
@@ -223,7 +236,7 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
     else:
         media_semanal_vendedor_loja = pd.DataFrame(columns=["codigo_vendedor","nome_vendedor","codigo_loja","faturamento_semana","qtd_semana"])
 
-    # Média mensal loja e vendedor
+    # Média mensal loja e vendedor (ordenar vendedor desc)
     if pd.api.types.is_datetime64_any_dtype(df["_data_venda"]):
         loja_mes = df.groupby([store_col, df["_data_venda"].dt.to_period("M")], dropna=False)[vcol].sum().reset_index()
         loja_mes.columns = ["codigo_loja","mes","faturamento_mes"]
@@ -240,6 +253,7 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
                 names.columns = ["codigo_vendedor","nome_vendedor"]
                 media_mensal_vendedor = media_mensal_vendedor.merge(names, on="codigo_vendedor", how="left")
                 media_mensal_vendedor = media_mensal_vendedor[["codigo_vendedor","nome_vendedor","faturamento_medio_mensal_vendedor"]]
+            media_mensal_vendedor = media_mensal_vendedor.sort_values("faturamento_medio_mensal_vendedor", ascending=False)
         else:
             media_mensal_vendedor = pd.DataFrame(columns=["codigo_vendedor","nome_vendedor","faturamento_medio_mensal_vendedor"])
     else:
@@ -264,7 +278,7 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
         wd_table = pd.DataFrame(columns=["dia_semana","faturamento total período","ocorrencias_no_periodo","faturamento_medio"])
         melhor_dia = ""
 
-    # Top produtos nos 3 dias com maior faturamento
+    # Top produtos nos 3 dias com maior faturamento – ordenar por faturamento desc por dia
     if prod_code and prod_code in df.columns and pd.api.types.is_datetime64_any_dtype(df["_data_venda"]):
         day_map = {0:"Segunda",1:"Terça",2:"Quarta",3:"Quinta",4:"Sexta",5:"Sábado",6:"Domingo"}
         order = np.argsort(-wd_sum.values)[:3]
@@ -285,13 +299,16 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
                     agg["codigo_produto"] = agg[prod_code]
                     agg["nome_produto"] = ""
                 agg["dia_semana"] = day_name
-                agg = agg.sort_values(["quantidade","faturamento"], ascending=[False, False]).head(50)
+                agg = agg.sort_values(["dia_semana","faturamento"], ascending=[True, False]).head(50)
                 agg = agg[["dia_semana","codigo_produto","nome_produto","quantidade","faturamento"]]
                 frames.append(agg)
         top_produtos_top3_dias = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["dia_semana","codigo_produto","nome_produto","quantidade","faturamento"])
     else:
         top_produtos_top3_dias = pd.DataFrame(columns=["dia_semana","codigo_produto","nome_produto","quantidade","faturamento"])
 
+    # Resumo com coluna "Média mensal"
+    media_fat_mensal = faturamento_rede / qtd_meses if qtd_meses > 0 else np.nan
+    media_cupom_mensal = total_cupons / qtd_meses if qtd_meses > 0 else np.nan
     resumo = pd.DataFrame({
         "Indicador": [
             "Faturamento da rede (R$)",
@@ -304,6 +321,12 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
             total_cupons,
             int(lojas["codigo_loja"].nunique()),
             int(vendedores["codigo_vendedor"].nunique()) if not vendedores.empty else 0
+        ],
+        "Média mensal": [
+            media_fat_mensal,
+            media_cupom_mensal,
+            "",
+            ""
         ]
     })
 
@@ -322,27 +345,60 @@ def compute_indicators(df: pd.DataFrame, cols: dict, pct_meta_growth: float):
         "media_mensal_vendedor": media_mensal_vendedor,
         "wd_table": wd_table,
         "melhor_dia": melhor_dia,
-        "top_produtos_top3_dias": top_produtos_top3_dias
+        "top_produtos_top3_dias": top_produtos_top3_dias,
+        "qtd_meses": qtd_meses
     }
 
 # ==============================
 # Excel com dashboard
 # ==============================
-def build_excel(df, result_dict, pct_meta_growth):
+def build_excel(df, result, pct_meta_growth):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        # Base
         df.to_excel(writer, sheet_name="Base", index=False)
-        result_dict["resumo"].to_excel(writer, sheet_name="Resumo", index=False)
-        result_dict["lojas"].sort_values("faturamento", ascending=False).to_excel(writer, sheet_name="Lojas", index=False)
 
-        vend = result_dict["vendedores"].copy().sort_values("faturamento", ascending=False).reset_index(drop=True)
-        vend.to_excel(writer, sheet_name="Vendedores", index=False, startrow=0)
         wb = writer.book
-        ws_vend = writer.sheets["Vendedores"]
-
         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
         fmt_int = wb.add_format({'num_format': '0'})
         fmt_pct = wb.add_format({'num_format': '0.00%'})
+        fmt_text = wb.add_format({})
+        fmt_money_abbrev_k = wb.add_format({'num_format': 'R$ 0,"K"'})
+        fmt_money_abbrev_m = wb.add_format({'num_format': 'R$ 0,,"M"'})
+        fmt_money_abbrev_b = wb.add_format({'num_format': 'R$ 0,,,"B"'})
+
+        # Resumo com média mensal
+        res = result["resumo"].copy()
+        res.to_excel(writer, sheet_name="Resumo", index=False)
+        ws_resumo = writer.sheets["Resumo"]
+        ws_resumo.set_column("A:A", 50)
+        ws_resumo.set_column("B:B", 24, fmt_money)
+        ws_resumo.set_column("C:C", 24, fmt_money)
+        for r in range(0, len(res)):
+            label = str(res.iloc[r, 0]).lower()
+            # Ajusta formatos numéricos para int onde fizer sentido
+            if "cupons" in label:
+                ws_resumo.write_number(r + 1, 1, float(res.iloc[r, 1]), fmt_int)
+                if pd.notna(res.iloc[r, 2]) and res.iloc[r, 2] != "":
+                    ws_resumo.write_number(r + 1, 2, float(res.iloc[r, 2]), fmt_int)
+            if any(k in label for k in ["lojas", "vendedores"]):
+                ws_resumo.write_number(r + 1, 1, float(res.iloc[r, 1]), fmt_int)
+                # média mensal não se aplica, deixo texto vazio
+                ws_resumo.write_string(r + 1, 2, "")
+
+        # Lojas (ordenado já na tela, mas aqui também)
+        lojas = result["lojas"].sort_values("faturamento", ascending=False)
+        lojas.to_excel(writer, sheet_name="Lojas", index=False)
+        ws_lojas = writer.sheets["Lojas"]
+        ws_lojas.set_column("A:A", 18)
+        ws_lojas.set_column("B:B", 18, fmt_money)
+        ws_lojas.set_column("C:C", 12, fmt_int)
+        ws_lojas.set_column("D:D", 20, fmt_money)
+
+        # Vendedores
+        vend = result["vendedores"].copy().sort_values("faturamento", ascending=False).reset_index(drop=True)
+        vend.to_excel(writer, sheet_name="Vendedores", index=False, startrow=0)
+        ws_vend = writer.sheets["Vendedores"]
         ws_vend.set_column("A:A", 22)
         ws_vend.set_column("B:B", 28)
         ws_vend.set_column("C:C", 18, fmt_money)
@@ -352,89 +408,105 @@ def build_excel(df, result_dict, pct_meta_growth):
         for i in range(2, nrows+2):
             ws_vend.write_formula(i-1, 4, f"=C{i}*(1 + D{i}/100)")
 
-        result_dict["dept"].to_excel(writer, sheet_name="Departamentos (100%)", index=False)
-        result_dict["dept_top5"].to_excel(writer, sheet_name="Dept Top5", index=False)
-        result_dict["vendas_diarias"].to_excel(writer, sheet_name="Vendas Diarias", index=False)
-        result_dict["media_diaria_vendedor"].to_excel(writer, sheet_name="Vendedor Media Diaria", index=False)
-        result_dict["media_semanal_vendedor_loja"].to_excel(writer, sheet_name="Vendedor Media Semanal", index=False)
-        result_dict["media_mensal_loja"].to_excel(writer, sheet_name="Loja Media Mensal", index=False)
-        result_dict["media_mensal_vendedor"].to_excel(writer, sheet_name="Vendedor Media Mensal", index=False)
-        result_dict["wd_table"].to_excel(writer, sheet_name="Dia da Semana", index=False)
-        result_dict["top_produtos_top3_dias"].to_excel(writer, sheet_name="Top Produtos Top3 Dias", index=False)
+        # Vendedor Media Diaria (ordenado desc)
+        vmd = result["media_diaria_vendedor"].copy()
+        vmd.to_excel(writer, sheet_name="Vendedor Media Diaria", index=False)
+        ws_vmd = writer.sheets["Vendedor Media Diaria"]
+        ws_vmd.set_column("A:A", 22)
+        ws_vmd.set_column("B:B", 28)
+        ws_vmd.set_column("C:C", 24, fmt_money)
 
-        ws_resumo = writer.sheets["Resumo"]
-        ws_lojas = writer.sheets["Lojas"]
+        # Vendedor Media Semanal (qtd como int)
+        vms = result["media_semanal_vendedor_loja"].copy()
+        vms.to_excel(writer, sheet_name="Vendedor Media Semanal", index=False)
+        ws_vms = writer.sheets["Vendedor Media Semanal"]
+        ws_vms.set_column("A:A", 22)
+        ws_vms.set_column("B:B", 28)
+        ws_vms.set_column("C:C", 14)
+        ws_vms.set_column("D:D", 20, fmt_money)
+        ws_vms.set_column("E:E", 14, fmt_int)  # qtd_semana inteiro
+
+        # Vendedor Media Mensal (ordenado desc)
+        vmm = result["media_mensal_vendedor"].copy()
+        vmm.to_excel(writer, sheet_name="Vendedor Media Mensal", index=False)
+        ws_vmm = writer.sheets["Vendedor Media Mensal"]
+        ws_vmm.set_column("A:A", 22)
+        ws_vmm.set_column("B:B", 28)
+        ws_vmm.set_column("C:C", 24, fmt_money)
+
+        # Departamentos
+        result["dept"].to_excel(writer, sheet_name="Departamentos (100%)", index=False)
+        ws_dept = writer.sheets["Departamentos (100%)"]
+        ws_dept.set_column("A:A", 22)
+        ws_dept.set_column("B:B", 28)
+        ws_dept.set_column("C:C", 18, fmt_money)
+        ws_dept.set_column("D:D", 16, fmt_pct)
+
+        result["dept_top5"].to_excel(writer, sheet_name="Dept Top5", index=False)
         ws_dept5 = writer.sheets["Dept Top5"]
+        ws_dept5.set_column("A:A", 22)
+        ws_dept5.set_column("B:B", 28)
+        ws_dept5.set_column("C:C", 18, fmt_money)
+        ws_dept5.set_column("D:D", 16, fmt_pct)
+
+        # Vendas Diarias
+        result["vendas_diarias"].to_excel(writer, sheet_name="Vendas Diarias", index=False)
         ws_dias = writer.sheets["Vendas Diarias"]
-        ws_wd = writer.sheets["Dia da Semana"]
-
-        ws_resumo.set_column("A:A", 45)
-        ws_resumo.set_column("B:B", 22, fmt_money)
-        for r in range(0, len(result_dict["resumo"])):
-            label = str(result_dict["resumo"].iloc[r, 0]).lower()
-            if any(k in label for k in ["cupons", "lojas", "vendedores"]):
-                ws_resumo.write_number(r + 1, 1, float(result_dict["resumo"].iloc[r, 1]), fmt_int)
-
-        ws_lojas.set_column("A:A", 18)
-        ws_lojas.set_column("B:B", 18, fmt_money)
-        ws_lojas.set_column("C:C", 12, fmt_int)
-        ws_lojas.set_column("D:D", 20, fmt_money)
-
-        for ws in [writer.sheets["Departamentos (100%)"], ws_dept5]:
-            ws.set_column("A:A", 22)
-            ws.set_column("B:B", 28)
-            ws.set_column("C:C", 18, fmt_money)
-            ws.set_column("D:D", 16, fmt_pct)
-
         ws_dias.set_column("A:A", 14)
         ws_dias.set_column("B:B", 18, fmt_money)
 
+        # Dia da Semana
+        result["wd_table"].to_excel(writer, sheet_name="Dia da Semana", index=False)
+        ws_wd = writer.sheets["Dia da Semana"]
         ws_wd.set_column("A:A", 18)
         ws_wd.set_column("B:B", 18, fmt_money)
         ws_wd.set_column("C:C", 10, fmt_int)
         ws_wd.set_column("D:D", 18, fmt_money)
-        last_row_wd = len(result_dict["wd_table"]) + 1
+        last_row_wd = len(result["wd_table"]) + 1
         ws_wd.conditional_format(f"B2:B{last_row_wd}", {'type': '3_color_scale'})
+        # Nota já estava em 4.8.5, mantém:
+        note_row = last_row_wd + 2
+        ws_wd.write_string(note_row, 0, "Nota:")
+        ws_wd.write_string(note_row + 1, 0, '- "faturamento total período" = soma de todas as vendas do dia da semana no período analisado.')
+        ws_wd.write_string(note_row + 2, 0, '- "ocorrencias_no_periodo" = número de vezes que esse dia da semana ocorreu no calendário do período.')
+        ws_wd.write_string(note_row + 3, 0, '- "faturamento_medio" = faturamento total ÷ ocorrencias_no_periodo.')
 
-        # Gráficos Excel
-        top10 = result_dict["lojas"].sort_values("faturamento", ascending=False).head(10)
+        # Top Produtos 3 Dias
+        tptd = result["top_produtos_top3_dias"].copy()
+        tptd.to_excel(writer, sheet_name="Top Produtos Top3 Dias", index=False)
+        ws_prod = writer.sheets["Top Produtos Top3 Dias"]
+        ws_prod.set_column("A:A", 14)
+        ws_prod.set_column("B:B", 16)
+        ws_prod.set_column("C:C", 36)
+        ws_prod.set_column("D:D", 14, fmt_int)
+        ws_prod.set_column("E:E", 18, fmt_money)
+
+        # Gráfico Excel: Top 10 Lojas com valores abreviados no eixo Y
+        top10 = result["lojas"].sort_values("faturamento", ascending=False).head(10)
         if len(top10) > 0:
             chart_col = wb.add_chart({'type': 'column'})
             chart_col.add_series({
                 'name': 'Faturamento (R$)',
                 'categories': f"='Lojas'!$A$2:$A${len(top10) + 1}",
                 'values':     f"='Lojas'!$B$2:$B${len(top10) + 1}",
-                'data_labels': {'value': True, 'num_format': 'R$ #,##0.00'}
+                'data_labels': {'value': True}
             })
             chart_col.set_title({'name': 'Top 10 Lojas por Faturamento'})
             chart_col.set_x_axis({'name': 'Código da Loja'})
-            chart_col.set_y_axis({'name': 'R$'})
-            ws_resumo.insert_chart('D2', chart_col, {'x_scale': 1.15, 'y_scale': 1.2})
 
-        if len(result_dict["dept_top5"]) > 0:
-            chart_pie = wb.add_chart({'type': 'pie'})
-            last_row_dept5 = len(result_dict["dept_top5"]) + 1
-            chart_pie.add_series({
-                'name': 'Participação Top-5 Departamentos',
-                'categories': f"='Dept Top5'!$B$2:$B${last_row_dept5}",
-                'values':     f"='Dept Top5'!$D$2:$D${last_row_dept5}",  # Percent no Excel
-                'data_labels': {'percentage': True}
-            })
-            chart_pie.set_title({'name': 'Participação no Faturamento – Top-5 Departamentos'})
-            ws_dept5.insert_chart('F2', chart_pie, {'x_scale': 1.2, 'y_scale': 1.2})
+            max_val = float(top10["faturamento"].max())
+            if max_val >= 1_000_000_000:
+                y_fmt = {'num_format': 'R$ 0,,,"B"'}
+            elif max_val >= 1_000_000:
+                y_fmt = {'num_format': 'R$ 0,,"M"'}
+            elif max_val >= 1_000:
+                y_fmt = {'num_format': 'R$ 0,"K"'}
+            else:
+                y_fmt = {'num_format': 'R$ 0'}
+            y_fmt['name'] = 'R$ (abreviado)'
 
-        if len(result_dict["vendas_diarias"]) > 0:
-            chart_line = wb.add_chart({'type': 'line'})
-            last_row_days = len(result_dict["vendas_diarias"]) + 1
-            chart_line.add_series({
-                'name': 'Faturamento Diário',
-                'categories': f"='Vendas Diarias'!$A$2:$A${last_row_days}",
-                'values':     f"='Vendas Diarias'!$B$2:$B${last_row_days}",
-                'data_labels': {'value': False}
-            })
-            chart_line.set_title({'name': 'Vendas Diárias da Rede'})
-            chart_line.set_y_axis({'name': 'R$'})
-            ws_dias.insert_chart('D2', chart_line, {'x_scale': 1.2, 'y_scale': 1.2})
+            chart_col.set_y_axis(y_fmt)
+            writer.sheets["Resumo"].insert_chart('E2', chart_col, {'x_scale': 1.15, 'y_scale': 1.2})
 
     buffer.seek(0)
     return buffer.getvalue()
@@ -442,9 +514,9 @@ def build_excel(df, result_dict, pct_meta_growth):
 # ==============================
 # UI
 # ==============================
-st.set_page_config(page_title="Indicadores Drogaria – v4.8.4 (produção)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria – v4.9.0 (produção)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria")
-st.caption("Versão " + APP_VERSION + " – correção definitiva do gráfico de participação por departamento.")
+st.caption("Versão " + APP_VERSION)
 
 uploads = st.file_uploader("Envie seus arquivos (.csv, .xlsx)", type=["csv", "xlsx", "xls"], accept_multiple_files=True)
 df = None
@@ -511,7 +583,7 @@ if df is not None:
 
     pct_meta_growth = st.number_input("📈 % Meta Crescimento dos Vendedores", min_value=0.0, max_value=100.0, value=10.0, step=0.5, help="Meta = faturamento * (1 + %/100).")
 
-    proceed = st.button("Gerar Indicadores (v4.8.4)")
+    proceed = st.button("Gerar Indicadores (v4.9.0)")
 
     if proceed:
         mapped = {
@@ -532,17 +604,20 @@ if df is not None:
         else:
             result = compute_indicators(df.copy(), mapped, pct_meta_growth)
 
-            st.subheader("📌 Resumo do Período (v4.8.4)")
+            st.subheader("📌 Resumo do Período (v4.9.0)")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Faturamento da Rede", fmt_brl(result["faturamento_rede"]))
             col2.metric("Total de Cupons", f"{int(result['cupons_total']):,}".replace(",", "."))
             col3.metric("Lojas Ativas", f"{int(result['lojas']['codigo_loja'].nunique())}")
             col4.metric("Vendedores com Vendas", f"{int(result['vendedores']['codigo_vendedor'].nunique()) if len(result['vendedores'])>0 else 0}")
 
+            if result["qtd_meses"] > 0:
+                st.caption(f"Média mensal: **{fmt_brl(result['resumo'].iloc[0]['Média mensal'])}** em faturamento e **{int(result['resumo'].iloc[1]['Média mensal'])}** cupons por mês, considerando **{result['qtd_meses']}** mês(es).")
+
             st.info(f"📅 Melhor dia da semana (pelo faturamento total): **{result['melhor_dia']}**" if result["melhor_dia"] else "📅 Informe a coluna de Data da Venda para análise por dia da semana.")
 
             st.markdown("#### 🏬 Faturamento por Loja")
-            df_show(result["lojas"].sort_values("faturamento", ascending=False))
+            df_show_money(result["lojas"].sort_values("faturamento", ascending=False), ["faturamento","ticket_medio_loja"])
 
             st.markdown("#### 👤 Vendedores (com metas)")
             vend_preview = result["vendedores"].copy()
@@ -550,19 +625,30 @@ if df is not None:
                 vend_preview["% meta crescimento"] = vend_preview["% meta crescimento"].map(lambda x: pct_ptbr(x) if pd.notna(x) else "")
             vend_preview["meta"] = vend_preview["meta"].map(lambda x: fmt_brl(x) if pd.notna(x) else "")
             vend_preview["faturamento"] = vend_preview["faturamento"].map(lambda x: fmt_brl(x))
-            df_show(vend_preview.sort_values("faturamento", ascending=False))
+            st.dataframe(vend_preview.sort_values("faturamento", ascending=False), width='stretch')
+
+            st.markdown("#### 📆 Vendedor – Média Diária (ordenado)")
+            df_show_money(result["media_diaria_vendedor"], ["faturamento_medio_diario"])
+
+            st.markdown("#### 📅 Vendedor – Média Semanal por Loja (qtd inteira)")
+            vms_show = result["media_semanal_vendedor_loja"].copy()
+            vms_show["faturamento_semana"] = vms_show["faturamento_semana"].map(fmt_brl)
+            vms_show["qtd_semana"] = vms_show["qtd_semana"].map(lambda x: int(round(x)))
+            st.dataframe(vms_show, width='stretch')
+
+            st.markdown("#### 📆 Vendedor – Média Mensal (ordenado)")
+            df_show_money(result["media_mensal_vendedor"], ["faturamento_medio_mensal_vendedor"])
 
             if len(result["dept_top5"]) > 0:
                 st.markdown("#### 🧪 Participação por Departamento – Top-5")
                 dept5 = result["dept_top5"].copy()
-                # Monta coluna de exibição (string) sem quebrar a coluna numérica
                 dept5["participacao_%_exibir"] = dept5["participacao_%"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " %" if pd.notna(x) else "")
-                df_show(dept5[["codigo_departamento","nome_departamento","faturamento","participacao_%_exibir"]].rename(columns={"participacao_%_exibir":"participacao_%"}))
+                st.dataframe(dept5[["codigo_departamento","nome_departamento","faturamento","participacao_%_exibir"]].rename(columns={"participacao_%_exibir":"participacao_%"}), width='stretch')
 
                 labels = dept5["nome_departamento"].replace("", np.nan).fillna(dept5["codigo_departamento"]).tolist()
-                sizes = dept5["participacao_frac"].astype(float).fillna(0).tolist()  # <- FIX: usa fração numérica
+                sizes = dept5["participacao_frac"].astype(float).fillna(0).tolist()
                 fig, ax = plt.subplots()
-                ax.pie(sizes, labels=labels, autopct=lambda p: pct_ptbr(p*100), startangle=140, pctdistance=0.7)  # p em fração -> *100
+                ax.pie(sizes, labels=labels, autopct=lambda p: pct_ptbr(p*100), startangle=140, pctdistance=0.7)
                 ax.set_title("Participação no Faturamento – Top-5 Departamentos")
                 st.pyplot(fig)
 
@@ -571,7 +657,7 @@ if df is not None:
                 wd_show = result["wd_table"].copy()
                 wd_show["faturamento total período"] = wd_show["faturamento total período"].map(fmt_brl)
                 wd_show["faturamento_medio"] = wd_show["faturamento_medio"].map(lambda x: fmt_brl(x) if pd.notna(x) else "")
-                df_show(wd_show)
+                st.dataframe(wd_show, width='stretch')
 
                 data = np.array([result["wd_table"]["faturamento_medio"].fillna(0).values])
                 fig_hm, ax_hm = plt.subplots()
@@ -587,7 +673,7 @@ if df is not None:
             if len(result["vendas_diarias"]) > 0:
                 st.markdown("#### 📅 Vendas Diárias da Rede")
                 vd = result["vendas_diarias"].copy()
-                df_show(vd)
+                df_show_money(vd, ["faturamento_dia"])
 
                 fig2, ax2 = plt.subplots()
                 ax2.plot(vd["data"], vd["faturamento_dia"])
@@ -598,11 +684,11 @@ if df is not None:
                 st.pyplot(fig2)
 
             st.divider()
-            st.markdown("### ⬇️ Download do Excel (v4.8.4)")
+            st.markdown("### ⬇️ Download do Excel (v4.9.0)")
             excel_bytes = build_excel(df.copy(), result, pct_meta_growth)
             st.download_button(
-                label="Baixar Excel (v4.8.4)",
+                label="Baixar Excel (v4.9.0)",
                 data=excel_bytes,
-                file_name=f"Indicadores_Drogaria_v4_8_4_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                file_name=f"Indicadores_Drogaria_v4_9_0_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
