@@ -1,7 +1,0 @@
-build-essential
-libatlas-base-dev
-libopenblas-dev
-libjpeg-dev
-zlib1g-dev
-libfreetype6-dev
-libpng-dev
