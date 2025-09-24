@@ -1,7 +1,7 @@
 
 # app.py
 # -*- coding: utf-8 -*-
-# v4.10.2 (estável | base 4.10.0 + pizza % do total | Py3.11 pinado)
+# v4.10.3 (produção estável | base 4.10.0 + pizza % total | compat Py3.13)
 
 import io, re, csv
 from datetime import datetime
@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
-APP_VERSION = "v4.10.2 (estável | base 4.10.0 + pizza % do total | Py3.11 pinado)"
+APP_VERSION = "v4.10.3 (produção estável | base 4.10.0 + pizza % total | compat Py3.13)"
 
 # ---------------- Utils ----------------
 @st.cache_data(show_spinner=False)
@@ -228,7 +228,6 @@ def build_excel(df, result):
         ws_dept5.set_column("D:D", 16, fmt_pct)
         ws_dept5.set_column("E:E", 30)  # label_total
 
-        # Pizza com rótulo = % do total (usa categoria = label_total)
         if len(dept5) > 0:
             last_row = len(dept5) + 1
             chart_pie = wb.add_chart({'type': 'pie'})
@@ -251,7 +250,7 @@ def build_excel(df, result):
     return buffer.getvalue()
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="Indicadores Drogaria – v4.10.2 (estável | base 4.10.0 + pizza % do total | Py3.11 pinado)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria – v4.10.3 (produção estável | base 4.10.0 + pizza % total | compat Py3.13)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria")
 st.caption("Versão " + APP_VERSION)
 
@@ -316,7 +315,7 @@ if df is not None:
 
     pct_meta = st.number_input("📈 % Meta Crescimento dos Vendedores", min_value=0.0, max_value=100.0, value=10.0, step=0.5)
 
-    if st.button("Gerar Indicadores (v4.10.2)"):
+    if st.button("Gerar Indicadores (v4.10.3)"):
         mapped = {
             "store_code": norm_to_display.get(store_code_norm) if store_code_norm != "(vazio)" else None,
             "seller_code": norm_to_display.get(seller_code_norm) if seller_code_norm != "(vazio)" else None,
@@ -367,11 +366,11 @@ if df is not None:
                 st.dataframe(vd_show, width='stretch')
 
             st.divider()
-            st.markdown("### ⬇️ Download do Excel (v4.10.2)")
+            st.markdown("### ⬇️ Download do Excel (v4.10.3)")
             excel_bytes = build_excel(df.copy(), result)
             st.download_button(
-                label="Baixar Excel (v4.10.2)",
+                label="Baixar Excel (v4.10.3)",
                 data=excel_bytes,
-                file_name="Indicadores_Drogaria_v4_10_2_{}.xlsx".format(datetime.now().strftime('%Y%m%d_%H%M')),
+                file_name="Indicadores_Drogaria_v4_10_3_{}.xlsx".format(datetime.now().strftime('%Y%m%d_%H%M')),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
