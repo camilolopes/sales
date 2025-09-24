@@ -1,20 +1,17 @@
-# Indicadores – v4.9.6 (produção | packages.txt + deps estáveis)
+# Indicadores – v4.10.0 (produção | compat Py3.13 + config.toml)
 
-## Conteúdo
-- `app.py` – aplicação Streamlit
-- `requirements.txt` – dependências Python (versões estáveis)
-- `packages.txt` – dependências de sistema para Streamlit Cloud
-- `README.md` – instruções rápidas
+## Por que esta versão?
+- O Streamlit Cloud estava forçando **Python 3.13**. Algumas versões antigas de libs não tinham wheels compatíveis.
+- Nesta build, o `requirements.txt` usa **faixas mínimas** para que o Cloud resolva automaticamente as versões com suporte a Py3.13.
+- Mantém `packages.txt` com dependências de sistema (OpenBLAS, freetype, png, etc.).
+- Inclui `.streamlit/config.toml` desativando o file watcher (mais estável no Cloud).
 
-## Execução local
+## Como rodar
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 ## Deploy no Streamlit Cloud
-Envie **app.py**, **requirements.txt** e **packages.txt**.
-
-
-## Nota
-Esta versão fixa o Python para 3.11.9 via `runtime.txt`, evitando incompatibilidades do Python 3.13 no Streamlit Cloud (pandas/numpy).
+- Suba `app.py`, `requirements.txt`, `packages.txt` e a pasta `.streamlit/config.toml`.
+- Aponte o deploy para `app.py`.

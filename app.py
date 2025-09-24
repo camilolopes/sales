@@ -1,7 +1,7 @@
 
 # app.py
 # -*- coding: utf-8 -*-
-# v4.9.7 (produção | runtime.txt py3.11 + packages.txt)
+# v4.10.0 (produção | packages.txt + deps estáveis)
 
 import io
 import re
@@ -18,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
-APP_VERSION = "v4.9.7 (produção | runtime.txt py3.11 + packages.txt)"
+APP_VERSION = "v4.10.0 (produção | packages.txt + deps estáveis)"
 
 @st.cache_data(show_spinner=False)
 def detect_delimiter(sample_text: str, default=","):
@@ -457,7 +457,7 @@ def build_excel(df, result, pct_meta_growth):
     buffer.seek(0)
     return buffer.getvalue()
 
-st.set_page_config(page_title="Indicadores Drogaria – v4.9.7 (produção | runtime.txt py3.11 + packages.txt)", layout="wide")
+st.set_page_config(page_title="Indicadores Drogaria – v4.10.0 (produção | packages.txt + deps estáveis)", layout="wide")
 st.title("📈 Indicadores de Vendas – Rede de Drogaria")
 st.caption("Versão " + APP_VERSION)
 
@@ -526,7 +526,7 @@ if df is not None:
 
     pct_meta_growth = st.number_input("📈 % Meta Crescimento dos Vendedores", min_value=0.0, max_value=100.0, value=10.0, step=0.5, help="Meta = faturamento * (1 + %/100).")
 
-    proceed = st.button("Gerar Indicadores (v4.9.7)")
+    proceed = st.button("Gerar Indicadores (v4.10.0)")
 
     if proceed:
         mapped = {
@@ -547,7 +547,7 @@ if df is not None:
         else:
             result = compute_indicators(df.copy(), mapped, pct_meta_growth)
 
-            st.subheader("📌 Resumo do Período (v4.9.7)")
+            st.subheader("📌 Resumo do Período (v4.10.0)")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Faturamento da Rede", fmt_brl(result["faturamento_rede"]))
             col2.metric("Total de Cupons", "{:,}".format(int(result['cupons_total'])).replace(",", "."))
@@ -630,14 +630,14 @@ if df is not None:
                 st.pyplot(fig2)
 
             st.divider()
-            st.markdown("### ⬇️ Download do Excel (v4.9.7)")
+            st.markdown("### ⬇️ Download do Excel (v4.10.0)")
             excel_bytes = build_excel(df.copy(), result, pct_meta_growth)
             if not excel_bytes or len(excel_bytes) == 0:
                 st.error("Falha ao gerar o Excel. Tente novamente.")
             else:
                 st.download_button(
-                    label="Baixar Excel (v4.9.7)",
+                    label="Baixar Excel (v4.10.0)",
                     data=excel_bytes,
-                    file_name="Indicadores_Drogaria_v4_9_6_{}.xlsx".format(datetime.now().strftime('%Y%m%d_%H%M')),
+                    file_name="Indicadores_Drogaria_v4_10_0_{}.xlsx".format(datetime.now().strftime('%Y%m%d_%H%M')),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
